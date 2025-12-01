@@ -1,0 +1,31 @@
+# python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+.env
+*.env
+
+# data
+data/raw/
+data/processed/
+report/figures/
+report/tables/
+1
+
+# training artifacts
+runs/
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.log
+
+# notebooks
+.ipynb_checkpoints/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

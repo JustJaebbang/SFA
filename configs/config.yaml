@@ -1,0 +1,29 @@
+seed: 42
+device: auto
+data:
+  root: data/processed
+  img_size: 224
+  batch_size: 64
+  num_workers: 4
+train:
+  epochs_head: 6
+  epochs_partial: 8
+  epochs_full: 10
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  label_smoothing: 0.1
+  use_focal: false
+  focal_gamma: 2.0
+  sampler: weighted
+  warmup_epochs: 5
+  cosine: true
+eval:
+  topk: 3
+  conf_threshold: 0.55
+calibration:
+  enabled: false
+paths:
+  runs_dir: runs
+  aliases_csv: data/aliases.csv
+  nutrition_csv: data/nutrition.csv
+  ckpt_name: best.ckpt

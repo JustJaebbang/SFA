@@ -1,0 +1,33 @@
+﻿alias,lang,normalized,food_id,display_name_ko,notes
+bibimbap,en,bibimbap,food_bibimbap,비빔밥,original_label
+비빔밥,ko,비빔밥,food_bibimbap,비빔밥,ko_display
+doenjang-jjigae,en,doenjang_jjigae,food_doenjang_jjigae,된장찌개,original_label
+된장찌개,ko,된장찌개,food_doenjang_jjigae,된장찌개,ko_display
+fried_chicken,en,fried_chicken,food_fried_chicken,후라이드치킨,original_label
+후라이드치킨,ko,후라이드치킨,food_fried_chicken,후라이드치킨,ko_display
+gimbap,en,gimbap,food_gimbap,김밥,original_label
+김밥,ko,김밥,food_gimbap,김밥,ko_display
+hamburger,en,hamburger,food_hamburger,햄버거,original_label
+햄버거,ko,햄버거,food_hamburger,햄버거,ko_display
+jajangmyeon,en,jajangmyeon,food_jajangmyeon,짜장면,original_label
+짜장면,ko,짜장면,food_jajangmyeon,짜장면,ko_display
+kimchi jjigae,en,kimchi_jjigae,food_kimchi_jjigae,김치찌개,original_label
+김치찌개,ko,김치찌개,food_kimchi_jjigae,김치찌개,ko_display
+pizza,en,pizza,food_pizza,피자,original_label
+피자,ko,피자,food_pizza,피자,ko_display
+ramen,en,ramen,food_ramen,라멘,original_label
+라멘,ko,라멘,food_ramen,라멘,ko_display
+risotto,en,risotto,food_risotto,리소토,original_label
+리소토,ko,리소토,food_risotto,리소토,ko_display
+spaghetti_bolognese,en,spaghetti_bolognese,food_spaghetti_bolognese,스파게티 볼로네제(미트소스),original_label
+스파게티 볼로네제(미트소스),ko,스파게티 볼로네제(미트소스),food_spaghetti_bolognese,스파게티 볼로네제(미트소스),ko_display
+spaghetti_carbonara,en,spaghetti_carbonara,food_spaghetti_carbonara,까르보나라 스파게티,original_label
+까르보나라 스파게티,ko,까르보나라 스파게티,food_spaghetti_carbonara,까르보나라 스파게티,ko_display
+sushi,en,sushi,food_sushi,초밥,original_label
+초밥,ko,초밥,food_sushi,초밥,ko_display
+tangsuyuk,en,tangsuyuk,food_tangsuyuk,탕수육,original_label
+탕수육,ko,탕수육,food_tangsuyuk,탕수육,ko_display
+tteokbokki,en,tteokbokki,food_tteokbokki,떡볶이,original_label
+떡볶이,ko,떡볶이,food_tteokbokki,떡볶이,ko_display
+yangnyeom_chicken,en,yangnyeom_chicken,food_yangnyeom_chicken,양념치킨,original_label
+양념치킨,ko,양념치킨,food_yangnyeom_chicken,양념치킨,ko_display
