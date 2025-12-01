@@ -80,6 +80,12 @@ if __name__ == "__main__":
     ap.add_argument("--cam_out_dir", type=str, default="report/figures/cam_eval")
     ap.add_argument("--cam_samples", type=int, default=12, help="Max number of CAM images to save")
     ap.add_argument("--tau", type=float, default=0.55, help="Low-confidence threshold")
+    ap.add_argument("--cam_ok", type=int, default=8, help="정답(OK) 샘플 CAM 저장 개수")
+    ap.add_argument("--cam_for", type=str, default="pred", choices=["pred","true","both"],
+                    help="CAM을 어떤 클래스 기준으로 만들지")
+    ap.add_argument("--cam_balance_per_class", type=int, default=0,
+                    help=">0이면 OK 샘플을 클래스별로 균등 샘플링(k개)하여 CAM 생성")
+
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.config,"r"))
@@ -123,23 +129,74 @@ if __name__ == "__main__":
                "ece_post":float(ece_post), "temperature":float(T)},
                open(out_dir/"tables/test_report.json","w"), indent=2)
 
-    # XAI: save CAMs for misclassified and low-confidence samples
-    cam_paths = []
+    # -------- Grad-CAM selection & saving (OK 포함) --------
     if args.gradcam:
-        mis_idx = np.where(y_true_np != y_pred_np)[0].tolist()
-        lowc_idx = np.where(conf.numpy() < args.tau)[0].tolist()
-        # combine and keep order with uniqueness
-        selected = []
-        for idx in mis_idx + lowc_idx:
-            if idx not in selected:
-                selected.append(idx)
-        selected = selected[:args.cam_samples]
-        print(f"[Grad-CAM] selected {len(selected)} samples (mis={len(mis_idx)}, low_conf={len(lowc_idx)})")
-        cam_dir = Path(args.cam_out_dir)
-        cam_paths = generate_cam_for_indices(model, device, te.dataset, classes, selected, cam_dir,
-                                             cfg['data']['img_size'], target_layer=args.target_layer,
-                                             gradcam_pp=args.gradcam_pp)
-        # Write list for convenience
-        json.dump({"cam_paths": cam_paths}, open(out_dir/"tables/cam_list.json","w"), indent=2, ensure_ascii=False)
-        print(f"[Grad-CAM] saved {len(cam_paths)} images under {cam_dir}")
+        import numpy as np
+
+        # 이미 위에서 계산한 값 재사용: y_true_np, y_pred_np, conf
+        conf_np = conf.detach().cpu().numpy() if hasattr(conf, "detach") else np.asarray(conf)
+
+        # 1) 인덱스 집합 생성
+        mis_idx  = np.where(y_true_np != y_pred_np)[0].tolist()                     # 오분류
+        lowc_idx = np.where(conf_np < args.tau)[0].tolist()                         # 저신뢰(보정 확률 기준)
+        ok_idx   = np.where((y_true_np == y_pred_np) & (conf_np >= 0.0))[0].tolist()# 정답(임계는 자유)
+
+        # 2) 선택 로직: 오분류 → 저신뢰 → OK(별도 쿼터)
+        selected, seen = [], set()
+
+        def take(pool, k):
+            cnt = 0
+            for i in pool:
+                if i not in seen:
+                    selected.append(i); seen.add(i)
+                    cnt += 1
+                    if cnt >= k:
+                        break
+
+        # cam_samples는 '최대' 개수로 사용(오분류 우선, 남으면 저신뢰)
+        take(mis_idx, args.cam_samples)
+        remain = max(0, args.cam_samples - len(selected))
+        if remain > 0:
+            take(lowc_idx, remain)
+
+        # OK(정답) 샘플은 별도 쿼터로 추가
+        ok_selected = []
+        if getattr(args, "cam_balance_per_class", 0) and args.cam_balance_per_class > 0:
+            # 클래스별 균등 샘플링
+            import collections, random
+            per = args.cam_balance_per_class
+            buckets = collections.defaultdict(list)
+            for i in ok_idx:
+                buckets[y_true_np[i]].append(i)
+            for c, lst in buckets.items():
+                random.shuffle(lst)
+                for i in lst[:per]:
+                    if i not in seen:
+                        ok_selected.append(i); seen.add(i)
+        else:
+            # 순서대로 cam_ok개
+            take(ok_idx, getattr(args, "cam_ok", 8))
+
+        selected += ok_selected
+
+        # 3) CAM 생성/저장
+        cam_dir = Path(args.cam_out_dir) if hasattr(args, "cam_out_dir") else (out_dir/"figures"/"cam_eval")
+        saved_paths = generate_cam_for_indices(
+            model=model,
+            device=device,
+            dataset=te.dataset,
+            classes=classes,
+            indices=selected,
+            out_dir=cam_dir,
+            img_size=cfg["data"]["img_size"],
+            target_layer=args.target_layer,
+            gradcam_pp=args.gradcam_pp
+        )
+
+        # 4) CAM 목록 저장
+        (out_dir/"tables").mkdir(exist_ok=True)
+        json.dump({"cam_paths": saved_paths},
+                open(out_dir/"tables"/"cam_list.json","w"), indent=2, ensure_ascii=False)
+        print(f"[Grad-CAM] selected={len(selected)} → saved={len(saved_paths)} @ {cam_dir}")
+    # ------------------------------------------------------
 
