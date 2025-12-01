@@ -24,27 +24,50 @@ def infer_all(model, loader, device):
 def generate_cam_for_indices(model, device, dataset, classes, indices, out_dir: Path,
                              img_size: int, target_layer: str = None, gradcam_pp: bool = False):
     out_dir.mkdir(parents=True, exist_ok=True)
-    # Build a single GradCAM instance (target layer may be auto-resolved once)
-    if target_layer is None:
-        target_layer = find_target_layer(model)
-    cam_engine = GradCAM(model, target_layer=target_layer, gradcam_pp=gradcam_pp)
-    saved = []
-    for i in indices:
-        img_path, true_idx = dataset.samples[i]
-        pil = Image.open(img_path).convert("RGB")
-        x = build_transforms(img_size, False)(pil).unsqueeze(0).to(device)
-        with torch.no_grad():
-            logits = model(x)
-            pred_idx = int(logits.argmax(1).item())
-            conf = float(F.softmax(logits, dim=1)[0, pred_idx].item())
-        cam_map, _ = cam_engine(x, class_idx=pred_idx)
-        overlay = overlay_cam_on_image(cam_map, pil, alpha=0.4, cmap="jet")
-        pred_name, true_name = classes[pred_idx], classes[true_idx]
-        fname = out_dir / f"{Path(img_path).stem}_pred-{pred_name}_true-{true_name}_conf-{conf:.2f}.png"
-        overlay.save(fname)
-        saved.append(str(fname))
-    cam_engine.close()
-    return saved
+    model_device = next(model.parameters()).device
+
+    # 1) 타깃 레이어 모듈 해석(문자열이면 안전하게 get_submodule, 없으면 자동 탐색)
+    tgt = model.get_submodule(target_layer) if target_layer else find_target_layer(model)
+
+    # 2) GradCAM 엔진 생성
+    cam_engine = GradCAM(
+        model,
+        target_layer=tgt,                         # 모듈을 직접 전달
+        use_cuda=(model_device.type == "cuda"),   # 모델이 올라간 디바이스 기준
+        gradcam_pp=gradcam_pp
+    )
+
+    try:
+        saved = []
+        for i in indices:
+            img_path, true_idx = dataset.samples[i]
+            pil = Image.open(img_path).convert("RGB")
+            x = build_transforms(img_size, False)(pil).unsqueeze(0).to(model_device)
+
+            # pred/class/conf 계산(여기서는 no_grad로 충분)
+            with torch.no_grad():
+                logits = model(x)
+                pred_idx = int(logits.argmax(1).item())
+                conf = float(F.softmax(logits, dim=1)[0, pred_idx].item())
+
+            # CAM 계산(엔진이 내부에서 hook/backward를 처리)
+            cam_map, _ = cam_engine(x, class_idx=pred_idx)
+
+            # overlay 생성: overlay_cam_on_image가 cmap 인자를 지원하지 않으면 cmap="jet"를 제거하세요.
+            overlay = overlay_cam_on_image(cam_map, pil, alpha=0.4)  # , cmap="jet"  ← 지원 시에만 사용
+
+            pred_name, true_name = classes[pred_idx], classes[true_idx]
+            fname = out_dir / f"{Path(img_path).stem}_pred-{pred_name}_true-{true_name}_conf-{conf:.2f}.png"
+            overlay.save(fname)
+            saved.append(str(fname))
+        return saved
+    finally:
+        # 훅 정리(구현 차이를 고려한 안전 가드)
+        if hasattr(cam_engine, "close"):
+            cam_engine.close()
+        elif hasattr(cam_engine, "remove_hooks"):
+            cam_engine.remove_hooks()
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -67,7 +90,13 @@ if __name__ == "__main__":
     sd = torch.load(args.ckpt, map_location="cpu")
     T  = float(sd.get("temperature", 1.0))
 
-    model = build_model(len(classes)); model.load_state_dict(sd["model"]); model.to(device).eval()
+    model = build_model(len(classes))
+    model.load_state_dict(sd["model"]); #model.to(device).eval()
+    # (기존) model = build_model(...); sd = torch.load(...); model.load_state_dict(sd["model"])
+    # 아래 한 줄을 모델 로드 후에 반드시 넣으세요.
+    model = model.to(device)     # ← 모델을 device(CUDA/CPU)에 올림
+    model.eval()
+
 
     # Evaluate
     y_true, logits = infer_all(model, te, device)

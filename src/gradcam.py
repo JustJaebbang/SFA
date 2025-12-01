@@ -36,33 +36,50 @@ def _to_numpy_img(img: Image.Image) -> np.ndarray:
     return arr
 
 
-def overlay_cam_on_image(cam: np.ndarray, image: Image.Image, alpha: float = 0.35,
-                         colormap: str = "jet") -> Image.Image:
+def overlay_cam_on_image(cam_map, pil_img, alpha=0.4, cmap="jet"):
     """
-    Overlay a CAM heatmap onto a PIL image.
-    - cam: 2D array in [0,1], shape (H, W)
-    - image: PIL.Image (RGB)
-    - alpha: heatmap transparency
-    - colormap: matplotlib colormap name
-    Returns: PIL.Image with overlay.
+    cam_map: torch.Tensor or np.ndarray, shape (H, W) or (1, H, W), 값 범위 임의
+    pil_img: PIL.Image
+    alpha: heatmap 가중치(0~1)
+    cmap: matplotlib 컬러맵 이름(str) 또는 None(기본 'jet')
     """
-    if cam.ndim != 2:
-        raise ValueError("cam must be 2D array (H, W) in [0,1]")
-    base = _to_numpy_img(image)
-    H, W, _ = base.shape
-    cam_resized = Image.fromarray((cam * 255).astype(np.uint8)).resize((W, H), Image.BILINEAR)
-    cam_resized = np.asarray(cam_resized).astype(np.float32) / 255.0
-
-    if cm is None:
-        # Fallback: simple red overlay without matplotlib
-        heat_rgb = np.stack([cam_resized, np.zeros_like(cam_resized), np.zeros_like(cam_resized)], axis=-1)
+    # 1) cam_map -> numpy [H,W], 0~1 정규화
+    if hasattr(cam_map, "detach"):
+        cam = cam_map.detach().cpu().numpy()
     else:
-        cmap = cm.get_cmap(colormap)
-        heat_rgb = cmap(cam_resized)[:, :, :3]  # drop alpha
+        cam = np.array(cam_map)
+    if cam.ndim == 3 and cam.shape[0] == 1:
+        cam = cam[0]
+    if cam.ndim != 2:
+        raise ValueError(f"cam_map must be 2D, got shape {cam.shape}")
+    cam = cam.astype(np.float32)
+    if np.isnan(cam).any() or np.isinf(cam).any():
+        cam = np.nan_to_num(cam, nan=0.0, posinf=0.0, neginf=0.0)
+    # 정규화
+    cmin, cmax = cam.min(), cam.max()
+    if cmax > cmin:
+        cam_norm = (cam - cmin) / (cmax - cmin)
+    else:
+        cam_norm = np.zeros_like(cam, dtype=np.float32)
 
-    out = (1 - alpha) * base + alpha * heat_rgb
-    out = np.clip(out, 0.0, 1.0)
-    return Image.fromarray((out * 255).astype(np.uint8))
+    # 2) heatmap 생성(컬러맵 적용)
+    try:
+        import matplotlib.cm as cm
+        cmap_obj = cm.get_cmap(cmap or "jet")
+        heatmap = cmap_obj(cam_norm)[:, :, :3]  # RGB, shape (H,W,3), 0~1
+    except Exception:
+        # matplotlib이 없거나 cmap 이름이 잘못되면 기본 'jet' 유사 처리
+        heatmap = np.stack([cam_norm, np.zeros_like(cam_norm), 1.0 - cam_norm], axis=-1)
+
+    # 3) 크기 맞추기 + 오버레이
+    img = pil_img.convert("RGB")
+    if (img.size[1], img.size[0]) != heatmap.shape[:2]:
+        heatmap = np.array(Image.fromarray((heatmap * 255).astype(np.uint8)).resize(img.size, Image.BILINEAR)) / 255.0
+
+    img_np = np.array(img).astype(np.float32) / 255.0
+    overlay = (1 - alpha) * img_np + alpha * heatmap
+    overlay = (np.clip(overlay, 0, 1) * 255).astype(np.uint8)
+    return Image.fromarray(overlay)
 
 
 def find_target_layer(model: nn.Module) -> str:
