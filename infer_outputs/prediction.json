@@ -1,0 +1,23 @@
+{
+  "pred_class_index": 8,
+  "pred_class_name": "ramen",
+  "confidence": 0.8705117106437683,
+  "probabilities": {
+    "bibimbap": 0.043285444378852844,
+    "doenjang_jjigae": 0.0025813805405050516,
+    "fried_chicken": 0.006499527487903833,
+    "gimbap": 0.005629506427794695,
+    "hamburger": 0.0076590850949287415,
+    "jajangmyeon": 0.0014437995851039886,
+    "kimchi_jjigae": 0.0021890848875045776,
+    "pizza": 0.00549080828204751,
+    "ramen": 0.8705117106437683,
+    "risotto": 0.0054886359721422195,
+    "spaghetti_bolognese": 0.013056468218564987,
+    "spaghetti_carbonara": 0.014403182081878185,
+    "sushi": 0.004336033947765827,
+    "tangsuyuk": 0.0037383243907243013,
+    "tteokbokki": 0.006418922450393438,
+    "yangnyeom_chicken": 0.007268092595040798
+  }
+}

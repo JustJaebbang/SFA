@@ -10,7 +10,8 @@ import matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, WeightedRandomSampler  # ← WeightedRandomSampler 추가
 from torchvision import datasets, transforms, models
 from sklearn.metrics import f1_score, accuracy_score
 
@@ -49,6 +50,57 @@ class ECELoss(nn.Module):
                 ece += torch.abs(avg_conf_in_bin - accuracy_in_bin) * prop_in_bin
 
         return ece
+    
+
+class FocalLoss(nn.Module):
+    """
+    Multi-class Focal Loss
+    alpha:
+      - None: no class weighting
+      - scalar(float): same weight for all classes
+      - tensor(num_classes): per-class weight (e.g., inverse freq)
+    """
+    def __init__(self, alpha=None, gamma: float = 2.0, reduction: str = "mean"):
+        super().__init__()
+        self.gamma = gamma
+        self.reduction = reduction
+        if isinstance(alpha, (float, int)):
+            self.alpha = float(alpha)
+        else:
+            # alpha is tensor or None
+            self.alpha = alpha
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        inputs: (N, C) logits
+        targets: (N,) 0~C-1
+        """
+        log_probs = F.log_softmax(inputs, dim=1)       # (N, C)
+        probs = torch.exp(log_probs)                   # (N, C)
+
+        # gather log_probs, probs for target classes
+        log_pt = log_probs.gather(1, targets.unsqueeze(1)).squeeze(1)  # (N,)
+        pt = probs.gather(1, targets.unsqueeze(1)).squeeze(1)          # (N,)
+
+        if self.alpha is None:
+            at = 1.0
+        else:
+            if isinstance(self.alpha, torch.Tensor):
+                # per-class alpha
+                at = self.alpha[targets]
+            else:
+                # scalar alpha
+                at = self.alpha
+
+        loss = -at * (1 - pt)**self.gamma * log_pt
+
+        if self.reduction == "mean":
+            return loss.mean()
+        elif self.reduction == "sum":
+            return loss.sum()
+        else:
+            return loss
+
 
 
 def compute_epoch_metrics(
@@ -277,6 +329,7 @@ def get_dataloaders(
     resize_size: int = 256,
     rrc_scale=(0.8, 1.0),
     rrc_ratio=(3.0/4.0, 4.0/3.0),
+    use_weighted_sampler: bool = False,
 ):
     """
     train_dir/
@@ -287,32 +340,22 @@ def get_dataloaders(
         class2/ ...
     """
 
-        # --- 학습용 transform: RandomResizedCrop + RandAugment + Flip + ColorJitter ---
+    # --- 학습용 transform ---
     train_transform = transforms.Compose(
         [
-            # 1) 크기/비율 랜덤 크롭
             transforms.RandomResizedCrop(
                 size=image_size,
-                scale=rrc_scale,   # (min, max)
-                ratio=rrc_ratio,   # (min, max)
+                scale=rrc_scale,
+                ratio=rrc_ratio,
             ),
-
-            # 2) RandAugment: 여러 강한 변환들을 랜덤 조합
-            #    num_ops: 한번에 적용할 연산 개수, magnitude: 강도 (0~10 정도)
             transforms.RandAugment(num_ops=2, magnitude=9),
-
-            # 3) 좌우 뒤집기 (음식은 보통 좌우 대칭이라 안전한 편)
             transforms.RandomHorizontalFlip(p=0.5),
-
-            # 4) 밝기/대비/채도/색조 랜덤 변화
             transforms.ColorJitter(
-                brightness=0.2,   # 0.0~? (0.2면 ±20% 정도)
+                brightness=0.2,
                 contrast=0.2,
                 saturation=0.2,
-                hue=0.02,         # 너무 크면 색이 많이 틀어질 수 있어 약하게
+                hue=0.02,
             ),
-
-            # 5) 텐서화 및 정규화
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
@@ -321,12 +364,11 @@ def get_dataloaders(
         ]
     )
 
-
-    # --- 검증용 transform: Resize → CenterCrop (일반적인 평가 패턴) ---
+    # --- 검증용 transform ---
     val_transform = transforms.Compose(
         [
-            transforms.Resize(resize_size),        # ex) 256 or 320
-            transforms.CenterCrop(image_size),     # ex) 224 or 256 or 320
+            transforms.Resize(resize_size),
+            transforms.CenterCrop(image_size),
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
@@ -335,17 +377,46 @@ def get_dataloaders(
         ]
     )
 
+    # Dataset
     train_dataset = datasets.ImageFolder(root=train_dir, transform=train_transform)
     val_dataset = datasets.ImageFolder(root=val_dir, transform=val_transform)
+
     class_names = train_dataset.classes
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
+    # 클래스별 샘플 수 계산
+    # ImageFolder는 train_dataset.targets 리스트를 가짐
+    train_targets = np.array(train_dataset.targets)
+    num_classes = len(class_names)
+    class_counts = np.bincount(train_targets, minlength=num_classes)
+
+    # WeightedRandomSampler 설정 (원하면)
+    if use_weighted_sampler:
+        # 클래스가 적게 나올수록 큰 weight를 갖도록 역비례
+        class_weights = 1.0 / (class_counts + 1e-8)  # (C,)
+        sample_weights = class_weights[train_targets]  # (N,)
+
+        sampler = WeightedRandomSampler(
+            weights=torch.from_numpy(sample_weights).double(),
+            num_samples=len(sample_weights),
+            replacement=True,
+        )
+
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            sampler=sampler,
+            shuffle=False,     # sampler 사용 시 shuffle=False
+            num_workers=num_workers,
+            pin_memory=True,
+        )
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=True,
+        )
 
     val_loader = DataLoader(
         val_dataset,
@@ -355,7 +426,9 @@ def get_dataloaders(
         pin_memory=True,
     )
 
-    return train_loader, val_loader, class_names
+    # class_counts도 함께 반환하여 FocalLoss alpha 계산에 사용
+    return train_loader, val_loader, class_names, class_counts.tolist()
+
 
 
 
@@ -402,6 +475,23 @@ def main():
                         help="Cosine decay에서 내려갈 최소 learning rate")
     # ▲▲ 여기까지 ▼▼
 
+     # ▼▼ 클래스 불균형 관련 옵션 추가 ▼▼
+    parser.add_argument("--use_weighted_sampler", action="store_true",
+                        help="클래스 분포 역비례 WeightedRandomSampler 사용 여부")
+    parser.add_argument("--use_focal_loss", action="store_true",
+                        help="CrossEntropy 대신 Focal Loss 사용 여부")
+    parser.add_argument("--focal_gamma", type=float, default=2.0,
+                        help="Focal Loss gamma")
+    parser.add_argument("--focal_alpha_balanced", action="store_true",
+                        help="클래스 빈도 역비례로 alpha (per-class weight) 자동 계산")
+    # ▲▲ 여기까지 ▲▲
+
+    # ▼▼ 여기 추가 ▼▼
+    parser.add_argument("--label_smoothing", type=float, default=0.0,
+                        help="CrossEntropyLoss에 사용할 label smoothing 계수 (예: 0.05~0.1)")
+    # ▲▲ 여기까지 ▲▲
+
+
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -410,7 +500,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Dataloaders
-    train_loader, val_loader, class_names = get_dataloaders(
+    train_loader, val_loader, class_names, class_counts = get_dataloaders(
     train_dir=args.train_dir,
     val_dir=args.val_dir,
     batch_size=args.batch_size,
@@ -419,7 +509,9 @@ def main():
     resize_size=args.resize_size,
     rrc_scale=(args.rrc_scale_min, args.rrc_scale_max),
     rrc_ratio=(args.rrc_ratio_min, args.rrc_ratio_max),
+    use_weighted_sampler=args.use_weighted_sampler,
 )
+
 
 
     num_classes = len(class_names)
@@ -428,8 +520,37 @@ def main():
     model = build_model(num_classes=num_classes, pretrained=(not args.no_pretrained))
     model = model.to(device)
 
-    # Loss
-    criterion = nn.CrossEntropyLoss()
+    # class_counts: list[int] -> numpy array
+    class_counts_arr = np.array(class_counts, dtype=np.float32)
+
+    # --- Loss 설정 (FocalLoss vs CrossEntropy + Label Smoothing) ---
+    if args.use_focal_loss:
+        # alpha_balanced 옵션이면 클래스 빈도 역비례 alpha 사용
+        if args.focal_alpha_balanced:
+            # 빈도 비율
+            freq = class_counts_arr / (class_counts_arr.sum() + 1e-8)
+            # 역비례 가중치
+            alpha_np = 1.0 / (freq + 1e-8)
+            # 스케일 조정(선택): 평균이 1 정도가 되도록
+            alpha_np = alpha_np / alpha_np.mean()
+
+            alpha_tensor = torch.tensor(alpha_np, dtype=torch.float32, device=device)
+        else:
+            alpha_tensor = None
+
+        criterion = FocalLoss(alpha=alpha_tensor, gamma=args.focal_gamma, reduction="mean")
+        print(f"[Info] Using FocalLoss (gamma={args.focal_gamma}, alpha_balanced={args.focal_alpha_balanced})")
+
+    else:
+        # PyTorch의 CrossEntropyLoss(label_smoothing=ε)를 사용
+        if args.label_smoothing > 0.0:
+            criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+            print(f"[Info] Using CrossEntropyLoss with label_smoothing={args.label_smoothing}")
+        else:
+            criterion = nn.CrossEntropyLoss()
+            print("[Info] Using CrossEntropyLoss (no label smoothing)")
+
+
 
     # Optimizer (처음에는 전체 파라미터 기준으로 만듦)
     base_lr = args.lr
